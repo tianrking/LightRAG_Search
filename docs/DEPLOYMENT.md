@@ -49,7 +49,7 @@ pip install -r requirements.txt
 ```bash
 vllm serve Qwen/Qwen2.5-72B-Instruct \
   --host 0.0.0.0 \
-  --port 8000 \
+  --port PORT \
   --tensor-parallel-size 8 \
   --gpu-memory-utilization 0.90 \
   --max-model-len 32768 \
@@ -65,23 +65,23 @@ vllm serve Qwen/Qwen2.5-72B-Instruct \
 python -c "from src.gpu_monitor import get_gpu_monitor; get_gpu_monitor().print_stats()"
 
 # 测试 vLLM API
-curl http://localhost:8000/v1/models
+curl http://localhost:PORT/v1/models
 
 # 测试推理
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:PORT/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "Qwen/Qwen2.5-72B-Instruct",
-    "messages": [{"role": "user", "content": "你好"}],
+    "messages": [{"role": "user", "content": "test"}],
     "max_tokens": 50
   }'
 ```
 
-### 4. 索引 HKIPO 文档
+### 4. 索引 业务数据 文档
 
 ```bash
 python main.py index \
-  --input /home/tianrui/gotohk/private_ragflow/workspace/HKIPO_resource \
+  --input /path/to/documents \
   --recursive
 ```
 
@@ -90,7 +90,7 @@ python main.py index \
 ```bash
 # 单次查询
 python main.py query \
-  --query "香港专利申请流程是什么？" \
+  --query "文档查询示例问题？" \
   --mode hybrid
 
 # 交互模式
@@ -127,7 +127,7 @@ class RAGConfig:
 
 ## 文件处理性能
 
-### HKIPO 数据集 (2,377 文件)
+### 业务数据 数据集 (2,377 文件)
 
 | 格式 | 数量 | 提取器 | 速度 |
 |------|------|--------|------|

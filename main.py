@@ -100,7 +100,12 @@ async def index_documents(input_dir: str = None,
     if concurrent:
         # 使用并发索引管理器
         logger.info("使用并发索引模式 (支持断点续传和去重)")
-        extractor = get_extractor()
+        # 根据配置启用 OCR 和指定引擎
+        extractor = get_extractor(
+            enable_ocr=cfg.rag.ENABLE_OCR,
+            ocr_engine_type=cfg.rag.OCR_ENGINE
+        )
+        logger.info(f"OCR 状态: {'启用 (' + cfg.rag.OCR_ENGINE + ')' if cfg.rag.ENABLE_OCR else '禁用'}")
         progress_dir = cfg.paths.PROJECT_ROOT / "data" / "index_progress"
 
         index_manager = get_index_manager(
@@ -133,7 +138,10 @@ async def index_documents(input_dir: str = None,
     else:
         # 使用简单的顺序索引
         logger.info("使用顺序索引模式")
-        extractor = get_extractor()
+        extractor = get_extractor(
+            enable_ocr=cfg.rag.ENABLE_OCR,
+            ocr_engine_type=cfg.rag.OCR_ENGINE
+        )
 
         logger.info(f"正在读取文档目录: {cfg.paths.INPUT_DIR}")
         documents = {}

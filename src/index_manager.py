@@ -321,7 +321,9 @@ class ConcurrentIndexer:
             result = self.extractor.extract(file_path)
 
             if not result.success:
-                return False, 0, result.error
+                # 将 ExtractionError 对象转换为字符串（修复 JSON 序列化错误）
+                error_msg = result.error.message if result.error else "未知错误"
+                return False, 0, error_msg
 
             # 索引入 RAG
             if result.content:

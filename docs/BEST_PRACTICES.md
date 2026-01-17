@@ -47,7 +47,7 @@
 ```python
 # ❌ 不推荐: 硬编码
 model = "Qwen/Qwen2.5-72B-Instruct"
-base_url = "http://localhost:8000/v1"
+base_url = "http://localhost:PORT/v1"
 
 # ✓ 推荐: 集中配置
 from config import get_config

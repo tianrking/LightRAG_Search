@@ -104,6 +104,15 @@ class RAGConfig:
     # 是否启用增量索引
     ENABLE_INCREMENTAL: bool = True
 
+    # 是否启用 OCR（用于扫描型 PDF）
+    ENABLE_OCR: bool = True
+
+    # OCR 引擎类型: "rapidocr", "paddleocr", "qwen2_vl"
+    OCR_ENGINE: str = "rapidocr"
+
+    # OCR 识别语言（支持中英文混合）
+    OCR_LANG: str = "ch"  # ch: 中文, en: 英文
+
 
 @dataclass
 class GPUConfig:

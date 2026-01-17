@@ -11,7 +11,7 @@
 │                    LightRAG 工作流程                         │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
-│  用户问题: "香港专利申请流程是什么？"                         │
+│  用户问题: "文档查询示例问题？"                              │
 │     │                                                        │
 │     ▼                                                        │
 │  ┌─────────────────┐                                        │
@@ -22,7 +22,7 @@
 │     ▼                                                        │
 │  ┌─────────────────┐                                        │
 │  │  2. 向量检索     │  → 在向量数据库中搜索相似文档           │
-│  │     找相关文档   │     (已索引的 HKIPO 文档)               │
+│  │     找相关文档   │     (已索引的业务文档)                   │
 │  └─────────────────┘                                        │
 │     │                                                        │
 │     ▼                                                        │
@@ -32,7 +32,7 @@
 │  └─────────────────┘                                        │
 │     │                                                        │
 │     ▼                                                        │
-│  最终回答: "根据香港专利条例，申请流程包括..."                 │
+│  最终回答: "根据相关文档，查询结果如下..."                    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -41,7 +41,7 @@
 | 模型 | 类型 | 作用 | 运行位置 | 端口 |
 |------|------|------|----------|------|
 | **bge-m3** | Embedding 模型 | 将文本转换为向量 | 本地 (GPU 0) | 无 |
-| **Qwen2.5-72B** | LLM | 理解问题 + 生成回答 | vLLM (8x4090) | 38199 |
+| **Qwen2.5-72B** | LLM | 理解问题 + 生成回答 | vLLM (8x4090) | PORT |
 
 ### 为什么需要两个模型？
 
@@ -66,14 +66,14 @@ python main.py query --query "你的问题" --mode hybrid
 
 **示例**：
 ```bash
-# 查询专利申请流程
-python main.py query --query "香港专利申请流程是什么？" --mode hybrid
+# 查询示例问题
+python main.py query --query "文档查询示例问题？" --mode hybrid
 
 # 查询商标注册
-python main.py query --query "如何注册香港商标？" --mode hybrid
+python main.py query --query "如何注册商标？" --mode hybrid
 
 # 查询知识产权保护
-python main.py query --query "香港知识产权保护有哪些类型？" --mode hybrid
+python main.py query --query "知识产权保护有哪些类型？" --mode hybrid
 ```
 
 ### 2. 交互模式（推荐）
@@ -84,13 +84,13 @@ python main.py interactive
 
 进入交互模式后，可以连续提问：
 ```
-请输入你的问题: 香港专利申请需要多长时间？
+请输入你的问题: 文档查询示例问题？
 [查询中...]
-回答: 根据香港专利条例...
+回答: 根据相关文档...
 
 请输入你的问题: 费用大概是多少？
 [查询中...]
-回答: 专利申请费用包括...
+回答: 相关费用包括...
 
 请输入你的问题: exit
 ```
@@ -108,7 +108,7 @@ LightRAG 支持四种查询模式：
 
 ```bash
 # 不同模式示例
-python main.py query --query "专利类型有哪些？" --mode local
+python main.py query --query "文档类型有哪些？" --mode local
 python main.py query --query "知识产权保护趋势？" --mode global
 python main.py query --query "如何申请商标？" --mode hybrid
 ```
@@ -144,7 +144,7 @@ async def search_documents(query: str):
     # 初始化服务
     llm = init_llm_service(
         model_name=cfg.llm.MODEL_NAME,
-        base_url=cfg.llm.BASE_URL,  # http://localhost:38199/v1
+        base_url=cfg.llm.BASE_URL,  # vLLM 服务地址
         api_key=cfg.llm.API_KEY
     )
 
@@ -172,14 +172,14 @@ async def search_documents(query: str):
     return result
 
 # 使用
-answer = asyncio.run(search_documents("香港专利申请流程"))
+answer = asyncio.run(search_documents("文档查询示例"))
 print(answer)
 ```
 
 ## 工作流程总结
 
 1. **索引阶段**（一次性）
-   - 读取 1894 个 HKIPO 文档
+   - 读取业务文档
    - bge-m3 将每个文档转换为向量
    - 存储到向量数据库
 
@@ -194,7 +194,7 @@ print(answer)
 
 | 服务 | 端口 | 说明 |
 |------|------|------|
-| vLLM | 38199 | LLM 推理服务 |
+| vLLM | PORT | LLM 推理服务 |
 
 ## 常见问题
 

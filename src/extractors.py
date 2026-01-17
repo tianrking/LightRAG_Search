@@ -21,6 +21,198 @@ import enum
 logger = logging.getLogger(__name__)
 
 
+# ========== OCR 引擎抽象 ==========
+
+class OCREngine(ABC):
+    """OCR 引擎基类"""
+
+    @abstractmethod
+    def recognize(self, image_bytes: bytes) -> List[Tuple]:
+        """
+        识别图片中的文字
+
+        Args:
+            image_bytes: 图片字节数据
+
+        Returns:
+            识别结果列表，每个元素为 (bbox, text, confidence)
+        """
+        pass
+
+    @abstractmethod
+    def get_engine_name(self) -> str:
+        """获取引擎名称"""
+        pass
+
+
+class RapidOCREngine(OCREngine):
+    """RapidOCR 引擎（轻量级，速度快）"""
+
+    def __init__(self):
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+            self._engine = RapidOCR()
+            logger.info("RapidOCR 引擎初始化成功")
+        except ImportError:
+            raise ImportError("请安装 rapidocr-onnxruntime: pip install rapidocr-onnxruntime")
+
+    def recognize(self, image_bytes: bytes) -> List[Tuple]:
+        result = self._engine(image_bytes)
+        if result and result[0]:
+            return result[0]
+        return []
+
+    def get_engine_name(self) -> str:
+        return "RapidOCR"
+
+
+class PaddleOCREngine(OCREngine):
+    """PaddleOCR 引擎（高精度，支持中英文混合）"""
+
+    def __init__(self, use_gpu: bool = True, lang: str = "ch"):
+        try:
+            from paddleocr import PaddleOCR
+            # 初始化 PaddleOCR
+            self._engine = PaddleOCR(
+                use_angle_cls=True,
+                lang=lang,
+                use_gpu=use_gpu,
+                show_log=False
+            )
+            logger.info(f"PaddleOCR 引擎初始化成功 (lang={lang}, gpu={use_gpu})")
+        except ImportError:
+            raise ImportError("请安装 paddleocr: pip install paddleocr")
+
+    def recognize(self, image_bytes: bytes) -> List[Tuple]:
+        import numpy as np
+        from io import BytesIO
+        from PIL import Image
+
+        # 将字节转换为 PIL Image
+        img = Image.open(BytesIO(image_bytes))
+        img_array = np.array(img)
+
+        # PaddleOCR 识别
+        result = self._engine.ocr(img_array, cls=True)
+
+        # 转换为统一格式
+        extracted = []
+        if result and result[0]:
+            for line in result[0]:
+                bbox = line[0]  # 边界框
+                text_info = line[1]  # (text, confidence)
+                text = text_info[0]
+                confidence = float(text_info[1])
+                extracted.append((bbox, text, confidence))
+
+        return extracted
+
+    def get_engine_name(self) -> str:
+        return "PaddleOCR"
+
+
+class Qwen2VLOCREngine(OCREngine):
+    """
+    Qwen2-VL 视觉语言模型 OCR 引擎
+    最强大的 OCR，支持理解复杂布局和表格
+    """
+
+    def __init__(self, model_path: str = "Qwen/Qwen2-VL-7B-Instruct", device: str = "cuda:0"):
+        try:
+            from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+            from PIL import Image
+            import torch
+
+            logger.info(f"加载 Qwen2-VL 模型: {model_path}")
+
+            self._model = Qwen2VLForConditionalGeneration.from_pretrained(
+                model_path,
+                torch_dtype=torch.bfloat16,
+                device_map=device
+            )
+            self._processor = AutoProcessor.from_pretrained(model_path)
+            self._device = device
+
+            logger.info("Qwen2-VL 引擎初始化成功")
+
+        except ImportError:
+            raise ImportError("请安装 transformers: pip install transformers torch Pillow")
+
+    def recognize(self, image_bytes: bytes) -> List[Tuple]:
+        from io import BytesIO
+        from PIL import Image
+
+        # 将字节转换为 PIL Image
+        image = Image.open(BytesIO(image_bytes))
+
+        # 构建提示词
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": image,
+                    },
+                    {"type": "text", "text": "请识别图片中的所有文字内容，保持原有布局和格式。如果是表格，请用表格格式输出。"}
+                ],
+            }
+        ]
+
+        # 准备输入
+        text = self._processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        image_inputs, video_inputs = self._processor.process_vision_info(messages)
+        inputs = self._processor(
+            text=[text],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to(self._device)
+
+        # 生成
+        with torch.no_grad():
+            generated_ids = self._model.generate(**inputs, max_new_tokens=2048)
+
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+        output_text = self._processor.batch_decode(
+            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )[0]
+
+        # Qwen2-VL 返回完整文本，没有边界框信息
+        # 返回格式: (None, text, 1.0)
+        return [(None, output_text, 1.0)]
+
+    def get_engine_name(self) -> str:
+        return "Qwen2-VL"
+
+
+def create_ocr_engine(engine_type: str = "rapidocr", **kwargs) -> OCREngine:
+    """
+    创建 OCR 引擎实例
+
+    Args:
+        engine_type: 引擎类型 ("rapidocr", "paddleocr", "qwen2_vl")
+        **kwargs: 引擎特定参数
+
+    Returns:
+        OCR 引擎实例
+    """
+    if engine_type == "rapidocr":
+        return RapidOCREngine(**kwargs)
+    elif engine_type == "paddleocr":
+        return PaddleOCREngine(**kwargs)
+    elif engine_type == "qwen2_vl":
+        return Qwen2VLOCREngine(**kwargs)
+    else:
+        raise ValueError(f"不支持的 OCR 引擎类型: {engine_type}")
+
+
 # ========== 错误分类 ==========
 
 class ExtractionErrorType(enum.Enum):
@@ -167,6 +359,7 @@ class FastPDFExtractor(BaseExtractor):
     高性能 PDF 提取器
     使用 PyMuPDF (fitz) 优化的提取策略
     添加详细错误分类和降级策略
+    支持多种 OCR 引擎
     """
 
     def __init__(self,
@@ -174,7 +367,9 @@ class FastPDFExtractor(BaseExtractor):
                  extract_tables: bool = False,
                  clean_whitespace: bool = True,
                  min_line_length: int = 0,
-                 enable_ocr_fallback: bool = False):
+                 enable_ocr_fallback: bool = False,
+                 ocr_engine_type: str = "rapidocr",
+                 ocr_engine_kwargs: dict = None):
         """
         初始化 PDF 提取器
 
@@ -184,12 +379,16 @@ class FastPDFExtractor(BaseExtractor):
             clean_whitespace: 是否清理空白字符
             min_line_length: 最小行长度过滤
             enable_ocr_fallback: 是否启用 OCR 降级（当文本提取失败时）
+            ocr_engine_type: OCR 引擎类型 ("rapidocr", "paddleocr", "qwen2_vl")
+            ocr_engine_kwargs: OCR 引擎初始化参数
         """
         self.extract_images = extract_images
         self.extract_tables = extract_tables
         self.clean_whitespace = clean_whitespace
         self.min_line_length = min_line_length
         self.enable_ocr_fallback = enable_ocr_fallback
+        self.ocr_engine_type = ocr_engine_type
+        self.ocr_engine_kwargs = ocr_engine_kwargs or {}
         self._ocr_engine = None
 
     def can_extract(self, file_path: Path) -> bool:
@@ -445,21 +644,24 @@ class FastPDFExtractor(BaseExtractor):
             )
 
     def _extract_with_ocr(self, file_path: Path, fitz) -> ExtractResult:
-        """OCR 降级提取"""
+        """OCR 降级提取（使用可配置的 OCR 引擎）"""
         if not self._ocr_engine:
             try:
-                from rapidocr_onnxruntime import RapidOCR
-                self._ocr_engine = RapidOCR()
-                logger.info("OCR 引擎初始化成功")
-            except ImportError:
+                # 使用统一的 OCR 引擎工厂创建
+                self._ocr_engine = create_ocr_engine(
+                    self.ocr_engine_type,
+                    **self.ocr_engine_kwargs
+                )
+                logger.info(f"OCR 引擎初始化成功: {self._ocr_engine.get_engine_name()}")
+            except (ImportError, ValueError) as e:
                 return ExtractResult(
                     content="",
                     metadata={},
                     success=False,
                     error=ExtractionError(
                         error_type=ExtractionErrorType.DEPENDENCY_MISSING,
-                        message="OCR 依赖未安装",
-                        suggestion="请运行: pip install rapidocr-onnxruntime"
+                        message=f"OCR 引擎初始化失败: {str(e)}",
+                        suggestion=f"请确保 {self.ocr_engine_type} 的依赖已安装"
                     )
                 )
 
@@ -478,11 +680,12 @@ class FastPDFExtractor(BaseExtractor):
                 img_bytes = pix.tobytes("png")
                 pix = None
 
-                # OCR 识别
-                result = self._ocr_engine(img_bytes)
+                # OCR 识别（使用统一的引擎接口）
+                result = self._ocr_engine.recognize(img_bytes)
 
-                if result and result[0]:
-                    lines = [line[1] for line in result[0] if line[1]]
+                if result:
+                    # result 格式: [(bbox, text, confidence), ...]
+                    lines = [line[1] for line in result if line and len(line) > 1 and line[1]]
                     if lines:
                         text = "\n".join(lines)
                         content_parts.append(text)
@@ -501,10 +704,11 @@ class FastPDFExtractor(BaseExtractor):
                     metadata={
                         "pages": len(content_parts),
                         "format": "pdf",
-                        "extractor": "FastPDFExtractor.ocr",
+                        "extractor": f"FastPDFExtractor.ocr.{self._ocr_engine.get_engine_name()}",
                         "char_count": len(content),
                         "ocr_used_pages": ocr_used_pages,
-                        "extraction_method": "ocr"
+                        "extraction_method": "ocr",
+                        "ocr_engine": self._ocr_engine.get_engine_name()
                     },
                     success=True
                 )
@@ -901,12 +1105,15 @@ class DocumentExtractor:
     """
     高性能文档提取器
     统一接口，自动路由到最优提取器
+    支持多种 OCR 引擎配置
     """
 
     def __init__(self,
                  enable_ocr: bool = False,
                  ocr_threshold: int = 50,
-                 use_chardet: bool = True):
+                 use_chardet: bool = True,
+                 ocr_engine_type: str = "rapidocr",
+                 ocr_engine_kwargs: dict = None):
         """
         初始化提取器链
 
@@ -914,8 +1121,11 @@ class DocumentExtractor:
             enable_ocr: 是否启用 OCR 支持（扫描 PDF）
             ocr_threshold: OCR 字符数阈值
             use_chardet: 是否使用 chardet 自动检测编码
+            ocr_engine_type: OCR 引擎类型 ("rapidocr", "paddleocr", "qwen2_vl")
+            ocr_engine_kwargs: OCR 引擎初始化参数
         """
         self.use_chardet = use_chardet
+        self.ocr_engine_type = ocr_engine_type
         self.extractors: list[BaseExtractor] = [
             FastTextExtractor(use_chardet=use_chardet),
             FastDocxExtractor(),
@@ -924,8 +1134,12 @@ class DocumentExtractor:
         # PDF 提取器：根据是否启用 OCR 选择
         if enable_ocr:
             # 使用支持 OCR 降级的提取器
-            self.extractors.insert(0, FastPDFExtractor(enable_ocr_fallback=True))
-            logger.info(f"已启用 OCR 降级支持 (阈值: {ocr_threshold} 字符)")
+            self.extractors.insert(0, FastPDFExtractor(
+                enable_ocr_fallback=True,
+                ocr_engine_type=ocr_engine_type,
+                ocr_engine_kwargs=ocr_engine_kwargs
+            ))
+            logger.info(f"已启用 OCR 降级支持 (引擎: {ocr_engine_type}, 阈值: {ocr_threshold} 字符)")
         else:
             # 使用快速 PDF 提取器（仅文本层）
             self.extractors.insert(0, FastPDFExtractor(enable_ocr_fallback=False))
@@ -1029,18 +1243,27 @@ class DocumentExtractor:
 # ========== 便捷函数 ==========
 
 def get_extractor(enable_ocr: bool = False,
-                  use_chardet: bool = True) -> DocumentExtractor:
+                  use_chardet: bool = True,
+                  ocr_engine_type: str = "rapidocr",
+                  ocr_engine_kwargs: dict = None) -> DocumentExtractor:
     """
     获取文档提取器实例
 
     Args:
         enable_ocr: 是否启用 OCR 支持
         use_chardet: 是否使用 chardet 自动检测编码
+        ocr_engine_type: OCR 引擎类型 ("rapidocr", "paddleocr", "qwen2_vl")
+        ocr_engine_kwargs: OCR 引擎初始化参数
 
     Returns:
         文档提取器实例
     """
-    return DocumentExtractor(enable_ocr=enable_ocr, use_chardet=use_chardet)
+    return DocumentExtractor(
+        enable_ocr=enable_ocr,
+        use_chardet=use_chardet,
+        ocr_engine_type=ocr_engine_type,
+        ocr_engine_kwargs=ocr_engine_kwargs
+    )
 
 
 # ========== 兼容旧接口 ==========
