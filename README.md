@@ -1,6 +1,6 @@
 # LightRAG 智能文档检索系统
 
-基于 LightRAG + vLLM 的高性能智能文档检索系统，专为 8x RTX 4090 配置优化，用于处理和分析 HKIPO 资源文件（2,377 个文档）。
+基于 LightRAG + vLLM 的高性能智能文档检索系统，专为 8x RTX 4090 配置优化，用于处理和分析大规模文档资源。
 
 ## 技术栈优势
 
@@ -107,12 +107,12 @@ curl http://localhost:8000/v1/models
 ### 4. 索引文档
 
 ```bash
-# 索引 HKIPO 资源 (1792 PDF + 84 DOCX + ...)
+# 索引文档目录（支持递归扫描）
 python main.py index \
-  --input /home/tianrui/gotohk/private_ragflow/workspace/HKIPO_resource \
+  --input /path/to/your/documents \
   --recursive
 
-# 或使用默认配置（已在 config.py 中设置路径）
+# 或使用默认配置（在 config.py 中设置路径）
 python main.py index
 ```
 
@@ -171,14 +171,14 @@ python main.py query --query "如何申请商标？" --mode hybrid
 
 ## 性能基准
 
-### HKIPO 数据集 (2,377 文件)
+### 数据集性能示例
 
 | 格式 | 数量 | 提取器 | 索引时间 |
 |------|------|--------|----------|
-| PDF | 1,792 | PyMuPDF | ~30min |
-| TXT | 3 | 原生 | <1min |
-| DOCX | 84 | python-docx | ~5min |
-| **总计** | **1,879** | | **~35min** |
+| PDF | 1,700+ | PyMuPDF | ~30min |
+| TXT | 数十个 | 原生 | <1min |
+| DOCX | 数十个 | python-docx | ~5min |
+| **总计** | **~1,800** | | **~35min** |
 
 ### 查询性能
 
