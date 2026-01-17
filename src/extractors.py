@@ -250,12 +250,46 @@ class ExtractionError:
     suggestion: Optional[str] = None
 
     def to_dict(self) -> dict:
+        """转换为字典（确保 JSON 可序列化）"""
         return {
-            "type": self.error_type.value,
+            "type": self.error_type.value if isinstance(self.error_type, ExtractionErrorType) else str(self.error_type),
             "message": self.message,
-            "details": self.details,
+            "details": self._sanitize_dict(self.details),
             "suggestion": self.suggestion
         }
+
+    @staticmethod
+    def _sanitize_dict(d: dict) -> dict:
+        """递归清理字典，确保所有值都是 JSON 可序列化的"""
+        cleaned = {}
+        for k, v in d.items():
+            if isinstance(v, (str, int, float, bool, type(None))):
+                cleaned[k] = v
+            elif isinstance(v, ExtractionErrorType):
+                cleaned[k] = v.value
+            elif isinstance(v, enum.Enum):
+                cleaned[k] = v.value
+            elif isinstance(v, dict):
+                cleaned[k] = ExtractionError._sanitize_dict(v)
+            elif isinstance(v, (list, tuple)):
+                cleaned[k] = [ExtractionError._sanitize_value(item) for item in v]
+            else:
+                cleaned[k] = str(v)
+        return cleaned
+
+    @staticmethod
+    def _sanitize_value(value) -> any:
+        """清理单个值"""
+        if isinstance(value, (str, int, float, bool, type(None))):
+            return value
+        elif isinstance(value, (ExtractionErrorType, enum.Enum)):
+            return value.value
+        elif isinstance(value, dict):
+            return ExtractionError._sanitize_dict(value)
+        elif isinstance(value, (list, tuple)):
+            return [ExtractionError._sanitize_value(item) for item in value]
+        else:
+            return str(value)
 
 
 # ========== 提取结果 ==========
@@ -359,16 +393,29 @@ class FastPDFExtractor(BaseExtractor):
     高性能 PDF 提取器
     使用 PyMuPDF (fitz) 优化的提取策略
     添加详细错误分类和降级策略
-    支持多种 OCR 引擎
+    支持多种 OCR 引擎的级联兜底方案
+
+    提取策略（按优先级）：
+    1. 标准文本提取（PyMuPDF get_text）
+    2. 备用提取模式（多种 flags 尝试）
+    3. OCR 降级级联方案：
+       - RapidOCR（快速，基础识别）
+       - PaddleOCR（高精度，支持表格和日文）
     """
+
+    # OCR 引擎优先级列表（从快到强）
+    OCR_ENGINE_CASCADE = [
+        ("rapidocr", {"lang": "ch"}),
+        ("paddleocr", {"use_gpu": True, "lang": "ch"})
+    ]
 
     def __init__(self,
                  extract_images: bool = False,
                  extract_tables: bool = False,
                  clean_whitespace: bool = True,
                  min_line_length: int = 0,
-                 enable_ocr_fallback: bool = False,
-                 ocr_engine_type: str = "rapidocr",
+                 enable_ocr_fallback: bool = True,
+                 ocr_engine_type: str = "cascade",
                  ocr_engine_kwargs: dict = None):
         """
         初始化 PDF 提取器
@@ -378,8 +425,9 @@ class FastPDFExtractor(BaseExtractor):
             extract_tables: 是否智能提取表格
             clean_whitespace: 是否清理空白字符
             min_line_length: 最小行长度过滤
-            enable_ocr_fallback: 是否启用 OCR 降级（当文本提取失败时）
-            ocr_engine_type: OCR 引擎类型 ("rapidocr", "paddleocr", "qwen2_vl")
+            enable_ocr_fallback: 是否启用 OCR 降级（默认启用）
+            ocr_engine_type: OCR 引擎类型 ("rapidocr", "paddleocr", "cascade")
+                              "cascade" 表示按优先级依次尝试所有引擎
             ocr_engine_kwargs: OCR 引擎初始化参数
         """
         self.extract_images = extract_images
@@ -389,7 +437,7 @@ class FastPDFExtractor(BaseExtractor):
         self.enable_ocr_fallback = enable_ocr_fallback
         self.ocr_engine_type = ocr_engine_type
         self.ocr_engine_kwargs = ocr_engine_kwargs or {}
-        self._ocr_engine = None
+        self._ocr_engines = {}  # 存储已初始化的 OCR 引擎
 
     def can_extract(self, file_path: Path) -> bool:
         return file_path.suffix.lower() == ".pdf"
@@ -419,7 +467,7 @@ class FastPDFExtractor(BaseExtractor):
         return self._extract_with_fallback(file_path, fitz)
 
     def _extract_with_fallback(self, file_path: Path, fitz) -> ExtractResult:
-        """带降级策略的提取"""
+        """带降级策略的提取（支持级联 OCR）"""
         extraction_errors = []
 
         # 策略 1: 标准文本提取
@@ -437,14 +485,25 @@ class FastPDFExtractor(BaseExtractor):
         else:
             extraction_errors.append(("alternative_mode", result.error))
 
-        # 策略 3: OCR 降级（如果启用）
+        # 策略 3: OCR 降级级联方案（如果启用）
         if self.enable_ocr_fallback:
-            result = self._extract_with_ocr(file_path, fitz)
-            if result.success:
-                logger.info(f"{file_path.name}: 使用 OCR 降级提取成功")
-                return result
+            if self.ocr_engine_type == "cascade":
+                # 尝试所有 OCR 引擎（按优先级）
+                for engine_type, default_kwargs in self.OCR_ENGINE_CASCADE:
+                    result = self._extract_with_ocr(file_path, fitz, engine_type, default_kwargs)
+                    if result.success:
+                        logger.info(f"{file_path.name}: 使用 {engine_type} OCR 提取成功")
+                        return result
+                    else:
+                        extraction_errors.append((f"ocr_{engine_type}", result.error))
             else:
-                extraction_errors.append(("ocr", result.error))
+                # 使用指定的 OCR 引擎
+                result = self._extract_with_ocr(file_path, fitz, self.ocr_engine_type, self.ocr_engine_kwargs)
+                if result.success:
+                    logger.info(f"{file_path.name}: 使用 {self.ocr_engine_type} OCR 提取成功")
+                    return result
+                else:
+                    extraction_errors.append(("ocr", result.error))
 
         # 所有策略都失败，返回详细的错误信息
         return self._create_failure_result(file_path, extraction_errors)
@@ -643,16 +702,25 @@ class FastPDFExtractor(BaseExtractor):
                 )
             )
 
-    def _extract_with_ocr(self, file_path: Path, fitz) -> ExtractResult:
-        """OCR 降级提取（使用可配置的 OCR 引擎）"""
-        if not self._ocr_engine:
+    def _extract_with_ocr(self, file_path: Path, fitz, engine_type: str = None, engine_kwargs: dict = None) -> ExtractResult:
+        """
+        OCR 降级提取（使用指定的 OCR 引擎）
+
+        Args:
+            file_path: PDF 文件路径
+            fitz: PyMuPDF 模块
+            engine_type: OCR 引擎类型
+            engine_kwargs: OCR 引擎参数
+        """
+        engine_type = engine_type or self.ocr_engine_type
+        engine_kwargs = engine_kwargs or self.ocr_engine_kwargs
+
+        # 获取或创建 OCR 引擎
+        if engine_type not in self._ocr_engines:
             try:
                 # 使用统一的 OCR 引擎工厂创建
-                self._ocr_engine = create_ocr_engine(
-                    self.ocr_engine_type,
-                    **self.ocr_engine_kwargs
-                )
-                logger.info(f"OCR 引擎初始化成功: {self._ocr_engine.get_engine_name()}")
+                self._ocr_engines[engine_type] = create_ocr_engine(engine_type, **engine_kwargs)
+                logger.info(f"OCR 引擎初始化成功: {engine_type}")
             except (ImportError, ValueError) as e:
                 return ExtractResult(
                     content="",
@@ -660,10 +728,12 @@ class FastPDFExtractor(BaseExtractor):
                     success=False,
                     error=ExtractionError(
                         error_type=ExtractionErrorType.DEPENDENCY_MISSING,
-                        message=f"OCR 引擎初始化失败: {str(e)}",
-                        suggestion=f"请确保 {self.ocr_engine_type} 的依赖已安装"
+                        message=f"OCR 引擎初始化失败 ({engine_type}): {str(e)}",
+                        suggestion=f"请确保 {engine_type} 的依赖已安装"
                     )
                 )
+
+        ocr_engine = self._ocr_engines[engine_type]
 
         try:
             doc = fitz.open(file_path)
@@ -681,7 +751,7 @@ class FastPDFExtractor(BaseExtractor):
                 pix = None
 
                 # OCR 识别（使用统一的引擎接口）
-                result = self._ocr_engine.recognize(img_bytes)
+                result = ocr_engine.recognize(img_bytes)
 
                 if result:
                     # result 格式: [(bbox, text, confidence), ...]
@@ -704,11 +774,11 @@ class FastPDFExtractor(BaseExtractor):
                     metadata={
                         "pages": len(content_parts),
                         "format": "pdf",
-                        "extractor": f"FastPDFExtractor.ocr.{self._ocr_engine.get_engine_name()}",
+                        "extractor": f"FastPDFExtractor.ocr.{ocr_engine.get_engine_name()}",
                         "char_count": len(content),
                         "ocr_used_pages": ocr_used_pages,
                         "extraction_method": "ocr",
-                        "ocr_engine": self._ocr_engine.get_engine_name()
+                        "ocr_engine": ocr_engine.get_engine_name()
                     },
                     success=True
                 )
@@ -719,8 +789,8 @@ class FastPDFExtractor(BaseExtractor):
                 success=False,
                 error=ExtractionError(
                     error_type=ExtractionErrorType.PDF_NO_TEXT_LAYER,
-                    message="OCR 提取失败或内容过少",
-                    details={"char_count": len(content)}
+                    message=f"OCR 提取内容过少 ({len(content)} 字符)",
+                    details={"char_count": len(content), "engine": engine_type}
                 )
             )
 
@@ -731,8 +801,8 @@ class FastPDFExtractor(BaseExtractor):
                 success=False,
                 error=ExtractionError(
                     error_type=ExtractionErrorType.PDF_PARSE_ERROR,
-                    message=f"OCR 提取失败: {str(e)}",
-                    details={"error": str(e)}
+                    message=f"OCR 提取失败 ({engine_type}): {str(e)}",
+                    details={"error": str(e), "engine": engine_type}
                 )
             )
 
@@ -1105,23 +1175,28 @@ class DocumentExtractor:
     """
     高性能文档提取器
     统一接口，自动路由到最优提取器
-    支持多种 OCR 引擎配置
+    支持多种 OCR 引擎配置和级联兜底方案
+
+    OCR 策略说明：
+    - ocr_engine_type="cascade": 自动尝试 RapidOCR → PaddleOCR
+    - ocr_engine_type="rapidocr": 仅使用 RapidOCR（快速）
+    - ocr_engine_type="paddleocr": 仅使用 PaddleOCR（高精度，支持表格）
     """
 
     def __init__(self,
-                 enable_ocr: bool = False,
+                 enable_ocr: bool = True,
                  ocr_threshold: int = 50,
                  use_chardet: bool = True,
-                 ocr_engine_type: str = "rapidocr",
+                 ocr_engine_type: str = "cascade",
                  ocr_engine_kwargs: dict = None):
         """
         初始化提取器链
 
         Args:
-            enable_ocr: 是否启用 OCR 支持（扫描 PDF）
+            enable_ocr: 是否启用 OCR 支持（默认启用，强烈推荐）
             ocr_threshold: OCR 字符数阈值
             use_chardet: 是否使用 chardet 自动检测编码
-            ocr_engine_type: OCR 引擎类型 ("rapidocr", "paddleocr", "qwen2_vl")
+            ocr_engine_type: OCR 引擎类型 ("rapidocr", "paddleocr", "cascade")
             ocr_engine_kwargs: OCR 引擎初始化参数
         """
         self.use_chardet = use_chardet
@@ -1133,13 +1208,16 @@ class DocumentExtractor:
 
         # PDF 提取器：根据是否启用 OCR 选择
         if enable_ocr:
-            # 使用支持 OCR 降级的提取器
+            # 使用支持 OCR 降级的提取器（默认级联模式）
             self.extractors.insert(0, FastPDFExtractor(
                 enable_ocr_fallback=True,
                 ocr_engine_type=ocr_engine_type,
                 ocr_engine_kwargs=ocr_engine_kwargs
             ))
-            logger.info(f"已启用 OCR 降级支持 (引擎: {ocr_engine_type}, 阈值: {ocr_threshold} 字符)")
+            if ocr_engine_type == "cascade":
+                logger.info(f"已启用级联 OCR 降级支持 (RapidOCR → PaddleOCR)")
+            else:
+                logger.info(f"已启用 OCR 降级支持 (引擎: {ocr_engine_type})")
         else:
             # 使用快速 PDF 提取器（仅文本层）
             self.extractors.insert(0, FastPDFExtractor(enable_ocr_fallback=False))
@@ -1242,17 +1320,18 @@ class DocumentExtractor:
 
 # ========== 便捷函数 ==========
 
-def get_extractor(enable_ocr: bool = False,
+def get_extractor(enable_ocr: bool = True,
                   use_chardet: bool = True,
-                  ocr_engine_type: str = "rapidocr",
+                  ocr_engine_type: str = "cascade",
                   ocr_engine_kwargs: dict = None) -> DocumentExtractor:
     """
     获取文档提取器实例
 
     Args:
-        enable_ocr: 是否启用 OCR 支持
+        enable_ocr: 是否启用 OCR 支持（默认启用）
         use_chardet: 是否使用 chardet 自动检测编码
-        ocr_engine_type: OCR 引擎类型 ("rapidocr", "paddleocr", "qwen2_vl")
+        ocr_engine_type: OCR 引擎类型 ("rapidocr", "paddleocr", "cascade")
+                        默认 "cascade" 会自动尝试所有引擎
         ocr_engine_kwargs: OCR 引擎初始化参数
 
     Returns:
