@@ -37,7 +37,12 @@ class FileRecord:
     file_type: str = ""          # 文件类型 (扩展名)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        """转换为字典（确保 JSON 可序列化）"""
+        data = asdict(self)
+        # 确保 error 字段是字符串（防止意外传入非字符串类型）
+        if data.get("error") is not None:
+            data["error"] = str(data["error"])
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> 'FileRecord':
