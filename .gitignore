@@ -1,0 +1,109 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project Specific
+data/
+logs/
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# Index Storage
+data/rag_storage/
+data/index_progress/
+*.index
+
+# Models Cache (HuggingFace)
+models/.cache/
+models/cache/
+.huggingface/
+
+# Model Files (large model weights)
+*.safetensors
+*.gguf
+*.bin
+*.pth
+*.pt
+*.ckpt
+Qwen/
+Llama/
+baai/
+BAAI/
+model-*
+*.index.json
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+
+# Backup Files
+*.bak
+*.backup
+*_backup.*
+
+# Temporary Files
+*.tmp
+*.temp
+.cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# PyTorch
+*.pth
+*.pt
+*.ckpt
+
+# Test Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Logs
+*.log
+logs/*.log
+
+# OS
+Thumbs.db
+.DS_Store
